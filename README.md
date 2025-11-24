@@ -15,10 +15,11 @@ Add to your Claude Desktop config:
 {
   "mcpServers": {
     "subsets": {
-      "command": "uv",
+      "command": "uvx",
       "args": [
-        "run",
-        "https://github.com/subsetsio/subsets-mcp-server",
+        "--from",
+        "git+https://github.com/subsetsio/subsets-mcp-server.git",
+        "mcp-server",
         "--api-key",
         "YOUR_API_KEY"
       ]
@@ -34,7 +35,7 @@ Requires [uv](https://docs.astral.sh/uv/) installed.
 ### Using Other MCP Clients
 
 ```bash
-uv run https://github.com/subsetsio/subsets-mcp-server --api-key YOUR_API_KEY
+uvx --from git+https://github.com/subsetsio/subsets-mcp-server.git mcp-server --api-key YOUR_API_KEY
 ```
 
 ## Available MCP Tools
