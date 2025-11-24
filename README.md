@@ -53,7 +53,7 @@ Search and browse available datasets with semantic search.
 list_datasets(q="unemployment europe", limit=5)
 ```
 
-### `get_dataset`
+### `get_dataset_details`
 Get detailed information about a specific dataset including schema, statistics, and preview.
 
 **Parameters:**
@@ -63,7 +63,7 @@ Get detailed information about a specific dataset including schema, statistics, 
 
 **Example:**
 ```
-get_dataset("eurostat_unemployment_2024")
+get_dataset_details("eurostat_unemployment_2024")
 ```
 
 ### `execute_sql_query`

@@ -209,7 +209,7 @@ def switch_mode(mode: str) -> Dict[str, Any]:
 
 
 @mcp.tool()
-def get_dataset(dataset_id: str) -> Dict[str, Any]:
+def get_dataset_details(dataset_id: str) -> Dict[str, Any]:
     """Get detailed information about a specific dataset including schema, summary statistics, and preview
 
     Args:
@@ -225,7 +225,7 @@ def get_dataset(dataset_id: str) -> Dict[str, Any]:
     """
     if current_mode == "local":
         return {
-            "error": "get_dataset is only available in remote mode. Switch to remote mode with switch_mode('remote')."
+            "error": "get_dataset_details is only available in remote mode. Switch to remote mode with switch_mode('remote')."
         }
 
     if not remote_platform:
@@ -233,18 +233,7 @@ def get_dataset(dataset_id: str) -> Dict[str, Any]:
             "error": "Remote mode requires API key. Run 'subsets init' to configure."
         }
 
-    return remote_platform.get_dataset(dataset_id)
-
-
-@mcp.tool()
-def search_datasets(q: str, limit: int = 10) -> Dict[str, Any]:
-    """Simple keyword-based search for datasets (local mode only)"""
-    if current_mode != "local":
-        return {
-            "error": "search_datasets is only available in local mode. Use list_datasets with 'q' parameter in remote mode."
-        }
-
-    return local_platform.list_datasets(q=q, limit=limit)
+    return remote_platform.get_dataset_details(dataset_id)
 
 
 @mcp.tool()

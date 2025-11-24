@@ -66,7 +66,7 @@ def test_github_url_works():
 
 def test_mcp_server_help():
     """Test running the MCP server with --help"""
-    cmd = "uv run https://github.com/subsetsio/subsets-mcp-server --help"
+    cmd = "uvx --from git+https://github.com/subsetsio/subsets-mcp-server.git mcp-server --help"
     return run_command(cmd, "Test MCP server --help from GitHub", timeout=60)
 
 def test_mcp_server_with_api_key():
@@ -85,19 +85,28 @@ def test_mcp_server_with_api_key():
             pass
 
     # Test the actual installation command users would run
-    cmd = f"timeout 5 uv run https://github.com/subsetsio/subsets-mcp-server --api-key {api_key} || true"
+    cmd = f"uvx --from git+https://github.com/subsetsio/subsets-mcp-server.git mcp-server --api-key {api_key}"
     print_status(f"\nTesting with API key (will timeout after 5s as MCP server runs indefinitely)", "info")
 
-    result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
-
-    # Server should start - we expect timeout which is success
-    if "usage:" in result.stderr or "Model Context Protocol" in result.stdout or result.returncode == 124:
-        print_status("✓ MCP server starts successfully", "success")
-        return True
-    else:
-        print_status("✗ MCP server failed to start", "error")
+    try:
+        result = subprocess.run(
+            cmd,
+            shell=True,
+            capture_output=True,
+            text=True,
+            timeout=5  # Will raise TimeoutExpired after 5 seconds
+        )
+        # If we get here, server exited (which is unexpected)
+        print_status("✗ MCP server exited unexpectedly", "error")
         print(f"stdout: {result.stdout[:300]}")
         print(f"stderr: {result.stderr[:300]}")
+        return False
+    except subprocess.TimeoutExpired:
+        # Server is running! This is success
+        print_status("✓ MCP server starts and runs successfully", "success")
+        return True
+    except Exception as e:
+        print_status(f"✗ MCP server failed to start: {e}", "error")
         return False
 
 def test_tools_available():
@@ -158,7 +167,7 @@ def main():
 
     if passed == total:
         print_status("\n🎉 All tests passed! MCP server is ready to use.", "success")
-        print_status("\nInstall with: uv run https://github.com/subsetsio/subsets-mcp-server --api-key YOUR_KEY", "info")
+        print_status("\nInstall with: uvx --from git+https://github.com/subsetsio/subsets-mcp-server.git mcp-server --api-key YOUR_KEY", "info")
         return 0
     else:
         print_status("\n⚠️  Some tests failed. Check output above.", "warning")

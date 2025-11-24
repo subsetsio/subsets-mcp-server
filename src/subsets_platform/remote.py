@@ -53,7 +53,7 @@ class RemoteDataPlatform:
                 "status_code": getattr(e.response, 'status_code', None) if hasattr(e, 'response') else None
             }
 
-    def get_dataset(self, dataset_id: str) -> Dict[str, Any]:
+    def get_dataset_details(self, dataset_id: str) -> Dict[str, Any]:
         """Get detailed information about a specific dataset including summary statistics"""
         headers = {
             "Authorization": f"Bearer {self.api_key}"
