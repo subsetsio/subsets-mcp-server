@@ -1,0 +1,33 @@
+[project]
+name = "subsets-mcp-server"
+version = "0.1.0"
+description = "Subsets MCP Server - Local-first data platform"
+readme = "README.md"
+requires-python = ">=3.11,<4"
+dependencies = [
+    "fastmcp>=2.10.0",
+    "pandas>=2.0.0",
+    "duckdb>=0.10.0",
+    "python-dateutil>=2.8.0",
+    "requests>=2.31.0",
+    "typer>=0.9.0",
+    "pyiceberg[s3fs,pandas]>=0.7.0",
+    "sqlalchemy (>=2.0.43,<3.0.0)",
+    "fastembed>=0.3.0",
+    "numpy>=1.24.0",
+    "pyarrow>=14.0.0",
+    "tqdm>=4.67.1",
+]
+
+[build-system]
+requires = ["setuptools>=61", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project.scripts]
+subsets = "cli:main"
+mcp-server = "server:main"
+
+[tool.setuptools]
+py-modules = ["cli", "server", "sync", "embeddings", "auth"]
+packages = ["subsets_platform"]
+package-dir = {"" = "src"}

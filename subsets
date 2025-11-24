@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+# Wrapper script for subsets CLI
+
+# Get the directory where this script is located
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# Set up the Python path and run the CLI
+cd "$SCRIPT_DIR" && PYTHONPATH="$SCRIPT_DIR/src:$PYTHONPATH" exec uv run python src/cli.py "$@"
