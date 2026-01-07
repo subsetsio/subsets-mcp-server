@@ -26,6 +26,13 @@ def save_api_key(api_key: str) -> None:
         json.dump(auth_data, f, indent=2)
 
 
+def clear_api_key() -> None:
+    """Clear API key from auth file."""
+    auth_path = Path.home() / "subsets" / "auth.json"
+    if auth_path.exists():
+        auth_path.unlink()
+
+
 def get_api_url() -> str:
     """Get API URL from environment variable.
 

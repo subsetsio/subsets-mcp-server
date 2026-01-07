@@ -14,14 +14,14 @@ class LocalDataPlatform:
         self.data_path = self.base_path / "data"
         self.log_path = self.base_path / "query_log.db"
         self.config_path = self.base_path / "config.json"
-        
+
         self._ensure_directories()
         self._init_query_log()
         self._load_config()
-        
-        # Initialize embedding service for semantic search
-        from embeddings import EmbeddingService
-        self.embedding_service = EmbeddingService(self.base_path / "embeddings")
+
+        # Initialize keyword search (downloads index from R2 on first use)
+        from keyword_search import get_keyword_search
+        self.keyword_search = get_keyword_search(self.base_path)
     
     def _ensure_directories(self):
         """Ensure all required directories exist"""
@@ -93,60 +93,71 @@ class LocalDataPlatform:
         min_score: Optional[float] = None,
         detailed: bool = False
     ) -> Dict[str, Any]:
-        """List available datasets from the local collection"""
+        """List available datasets from the local collection using keyword search."""
         try:
-            start_time = datetime.now()
             all_datasets = self._get_all_datasets()
 
-            # Apply filters
-            filtered_datasets = []
-            for dataset in all_datasets:
-                if license and dataset.get("license") != license:
-                    continue
-                if git_user and dataset.get("git_user") != git_user:
-                    continue
-
-                filtered_datasets.append(dataset)
-            
-            # Apply semantic search if query is provided
-            if q and filtered_datasets:
+            # If query provided, use keyword search for ranking
+            if q and self.keyword_search:
                 try:
-                    # Index datasets for semantic search if needed
-                    self.embedding_service.index_datasets(filtered_datasets)
-                    
-                    # Perform semantic search
-                    semantic_results = self.embedding_service.semantic_search(
-                        q, 
-                        filtered_datasets, 
-                        min_score=min_score, 
-                        top_k=None
-                    )
-                    
-                    # Extract datasets and maintain order by relevance
-                    filtered_datasets = [result[0] for result in semantic_results]
-                    
-                except Exception as e:
-                    print(f"Semantic search failed: {e}")
-                    # No fallback to keyword search - let it return empty results
+                    # Get ranked results from keyword search
+                    search_results = self.keyword_search.search(q, limit=100)
+                    ranked_ids = {r["dataset_id"]: r["score"] for r in search_results}
+
+                    # Filter and rank datasets
                     filtered_datasets = []
-            
+                    for dataset in all_datasets:
+                        dataset_id = dataset.get("id")
+                        if dataset_id not in ranked_ids:
+                            continue
+                        if license and dataset.get("license") != license:
+                            continue
+                        if git_user and dataset.get("git_user") != git_user:
+                            continue
+                        if min_score and ranked_ids[dataset_id] < min_score:
+                            continue
+
+                        # Add score to dataset for sorting
+                        dataset_with_score = {**dataset, "_score": ranked_ids[dataset_id]}
+                        filtered_datasets.append(dataset_with_score)
+
+                    # Sort by score descending
+                    filtered_datasets.sort(key=lambda d: d.get("_score", 0), reverse=True)
+
+                    # Remove internal score field
+                    for d in filtered_datasets:
+                        d.pop("_score", None)
+
+                except Exception as e:
+                    print(f"Keyword search failed: {e}")
+                    filtered_datasets = []
+            else:
+                # No query - just filter
+                filtered_datasets = []
+                for dataset in all_datasets:
+                    if license and dataset.get("license") != license:
+                        continue
+                    if git_user and dataset.get("git_user") != git_user:
+                        continue
+                    filtered_datasets.append(dataset)
+
             # Apply pagination
             total = len(filtered_datasets)
             paginated = filtered_datasets[offset:offset + limit]
-            
+
             self._log_query(
                 f"list_datasets(q={q}, limit={limit}, offset={offset})",
                 success=True,
                 rows_returned=len(paginated)
             )
-            
+
             return {
                 "datasets": paginated,
                 "total": total,
                 "limit": limit,
                 "offset": offset
             }
-            
+
         except Exception as e:
             self._log_query(
                 f"list_datasets(q={q}, limit={limit}, offset={offset})",
@@ -327,16 +338,93 @@ class LocalDataPlatform:
         """Remove datasets from the local collection"""
         if 'datasets' not in self.config:
             return 0
-        
+
         original_count = len(self.config['datasets'])
         self.config['datasets'] = [
-            d for d in self.config['datasets'] 
+            d for d in self.config['datasets']
             if d['id'] not in dataset_ids
         ]
-        
+
         removed_count = original_count - len(self.config['datasets'])
-        
+
         if removed_count > 0:
             self._save_config()
-        
+
         return removed_count
+
+    def search_datasets(self, query: str, limit: int = 20) -> Dict[str, Any]:
+        """
+        Fast keyword search returning dataset IDs with available metadata.
+
+        Uses the same pre-built index as the remote API for consistent results.
+        Downloads the index from R2 on first use.
+
+        Local mode returns less metadata than remote (no description/schema in local index).
+        """
+        if self.keyword_search is None:
+            return {
+                "error": "Keyword search not available",
+                "query": query,
+                "results": [],
+                "total": 0
+            }
+
+        try:
+            search_results = self.keyword_search.search(query, limit)
+
+            # Build local metadata lookup from config
+            local_metadata = {d["id"]: d for d in self.config.get("datasets", [])}
+
+            # Enrich results with local metadata where available
+            enriched_results = []
+            for r in search_results:
+                dataset_id = r["dataset_id"]
+                meta = local_metadata.get(dataset_id, {})
+
+                # Read sync_info if available for row_count hint
+                sync_info = self._read_sync_info(dataset_id)
+
+                enriched_results.append({
+                    "dataset_id": dataset_id,
+                    "title": meta.get("title") or meta.get("name") or dataset_id,
+                    "description": meta.get("description", ""),
+                    "row_count": sync_info.get("row_count") if sync_info else None,
+                    "columns": [],  # Not available in local index
+                    "score": r["score"]
+                })
+
+            self._log_query(
+                f"search_datasets(q={query}, limit={limit})",
+                success=True,
+                rows_returned=len(enriched_results)
+            )
+
+            return {
+                "query": query,
+                "results": enriched_results,
+                "total": len(enriched_results)
+            }
+
+        except Exception as e:
+            self._log_query(
+                f"search_datasets(q={query}, limit={limit})",
+                success=False,
+                error_message=str(e)
+            )
+            return {
+                "error": f"Search failed: {str(e)}",
+                "query": query,
+                "results": [],
+                "total": 0
+            }
+
+    def _read_sync_info(self, dataset_id: str) -> Optional[Dict[str, Any]]:
+        """Read sync_info.json for a dataset if it exists."""
+        sync_info_path = self.data_path / dataset_id / "sync_info.json"
+        if sync_info_path.exists():
+            try:
+                with open(sync_info_path, 'r') as f:
+                    return json.load(f)
+            except Exception:
+                pass
+        return None

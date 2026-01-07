@@ -96,7 +96,7 @@ class RemoteDataPlatform:
             
             result = response.json()
 
-            # Server returns: {columns: [...], rows: [[...], ...], row_count, execution_time_ms}
+            # Server returns: {columns: [...], rows: [[...], ...], row_count}
             if output_format == "tsv":
                 # Check if result has the expected structure
                 if "columns" in result and "rows" in result:
@@ -139,4 +139,29 @@ class RemoteDataPlatform:
                 "error": f"Failed to execute SQL query: {str(e)}",
                 "status_code": getattr(e.response, 'status_code', None) if hasattr(e, 'response') else None,
                 "detail": error_detail
+            }
+
+    def search_datasets(self, query: str, limit: int = 20) -> Dict[str, Any]:
+        """Fast keyword search returning dataset IDs and titles.
+
+        Much faster than list_datasets for discovery. Returns minimal data
+        for quick back-and-forth queries.
+        """
+        headers = {
+            "Authorization": f"Bearer {self.api_key}"
+        }
+
+        try:
+            response = requests.get(
+                f"{self.api_url}/search/with-titles",
+                params={"q": query, "limit": limit},
+                headers=headers,
+                timeout=10
+            )
+            response.raise_for_status()
+            return response.json()
+        except requests.exceptions.RequestException as e:
+            return {
+                "error": f"Search failed: {str(e)}",
+                "status_code": getattr(e.response, 'status_code', None) if hasattr(e, 'response') else None
             }

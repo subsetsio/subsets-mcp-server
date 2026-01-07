@@ -275,36 +275,27 @@ def sync():
         leave=True
     )
     
-    def progress_callback(completed_datasets, total_datasets, completed_bytes, total_bytes, indexed_count):
+    def progress_callback(completed_datasets, total_datasets, completed_bytes, total_bytes):
         # Update progress bar
         pbar.n = completed_bytes
         # Update description to show dataset count
         pbar.set_postfix_str(f"{completed_datasets}/{total_datasets} datasets")
         pbar.refresh()
 
-    # Get embedding service from local platform
-    local_platform = get_local_platform()
-
     # Start syncing with parallel workers
     results = sync_all_datasets(
         unsynced,
         data_path,
-        embedding_service=local_platform.embedding_service,
         progress_callback=progress_callback,
         max_workers=8  # Use 8 parallel workers
     )
-    
+
     # Close progress bar
     pbar.close()
 
-    # Simple summary with indexing info
-    indexed_count = results.get('indexed_count', 0)
+    # Simple summary
     synced_count = len(results['synced'])
-
-    if indexed_count > 0:
-        typer.echo(f"\n✓ Synced and indexed {synced_count} datasets")
-    else:
-        typer.echo(f"\n✓ Synced: {synced_count}")
+    typer.echo(f"\n✓ Synced: {synced_count}")
 
     if results['up_to_date']:
         typer.echo(f"✓ Already up to date: {len(results['up_to_date'])}")

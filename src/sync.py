@@ -57,13 +57,11 @@ def sync_dataset(
     dataset_id: str,
     data_path: Path,
     dataset_metadata: Optional[Dict[str, Any]] = None,
-    embedding_service = None,
     quiet: bool = False
 ) -> Dict[str, Any]:
     """
     Sync a dataset using Delta Lake incremental sync.
     Downloads only changed files using the versioned download endpoint.
-    After successful sync, indexes embeddings for semantic search.
     """
     from auth import get_api_key, get_api_url
 
@@ -75,7 +73,6 @@ def sync_dataset(
         "status": "started",
         "files_downloaded": 0,
         "bytes_downloaded": 0,
-        "indexed": False,
         "error": None
     }
 
@@ -189,24 +186,6 @@ def sync_dataset(
         if not quiet:
             print(f"✓ Synced {dataset_id} to v{remote_version}")
 
-        # Index embeddings for semantic search
-        if embedding_service and dataset_metadata:
-            try:
-                # Ensure dataset has an id field for indexing
-                if 'id' not in dataset_metadata:
-                    dataset_metadata['id'] = dataset_id
-
-                index_result = embedding_service.index_datasets([dataset_metadata])
-                stats["indexed"] = (index_result.get("new", 0) + index_result.get("updated", 0)) > 0
-
-                if not quiet and stats["indexed"]:
-                    print(f"✓ Indexed embeddings for {dataset_id}")
-            except Exception as e:
-                # Don't fail the entire sync if indexing fails
-                if not quiet:
-                    print(f"Warning: Failed to index embeddings for {dataset_id}: {e}")
-                stats["indexed"] = False
-
     except Exception as e:
         stats["status"] = "failed"
         stats["error"] = str(e)
@@ -219,11 +198,10 @@ def sync_dataset(
 def sync_all_datasets(
     datasets: List[Dict[str, Any]],
     data_path: Path,
-    embedding_service = None,
     progress_callback=None,
     max_workers: int = 8
 ) -> Dict[str, List[Dict[str, Any]]]:
-    """Sync all datasets in parallel with progress tracking and embedding indexing."""
+    """Sync all datasets in parallel with progress tracking."""
     results = {
         "synced": [],
         "failed": [],
@@ -237,22 +215,20 @@ def sync_all_datasets(
     # Progress tracking
     completed_count = 0
     completed_bytes = 0
-    indexed_count = 0
     progress_lock = threading.Lock()
 
     def sync_with_progress(dataset: Dict[str, Any]) -> Dict[str, Any]:
         """Wrapper to handle progress updates."""
-        nonlocal completed_count, completed_bytes, indexed_count
+        nonlocal completed_count, completed_bytes
 
         dataset_id = dataset['id']
         dataset_size = dataset.get('size_bytes', 0) or 0
 
-        # Perform the sync quietly (with embedding indexing)
+        # Perform the sync quietly
         sync_result = sync_dataset(
             dataset_id,
             data_path,
             dataset_metadata=dataset,
-            embedding_service=embedding_service,
             quiet=True
         )
 
@@ -261,16 +237,13 @@ def sync_all_datasets(
             completed_count += 1
             if sync_result["status"] in ["completed", "up_to_date"]:
                 completed_bytes += sync_result.get("bytes_downloaded", 0)
-            if sync_result.get("indexed", False):
-                indexed_count += 1
 
             if progress_callback:
                 progress_callback(
                     completed_count,
                     total_datasets,
                     completed_bytes,
-                    total_size_bytes,
-                    indexed_count
+                    total_size_bytes
                 )
 
         # Store result
@@ -303,8 +276,5 @@ def sync_all_datasets(
                         "status": "failed",
                         "error": str(e)
                     })
-
-    # Add indexed count to results
-    results["indexed_count"] = indexed_count
 
     return results
