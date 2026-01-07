@@ -209,80 +209,41 @@ def switch_mode(mode: str) -> Dict[str, Any]:
 
 
 @mcp.tool()
-def login(api_key: str) -> Dict[str, Any]:
-    """Authenticate with your Subsets API key.
+def login() -> Dict[str, Any]:
+    """Start the device authorization login flow.
 
-    This saves your API key locally and enables remote mode features like
-    executing SQL queries against the full data warehouse.
-
-    Get your API key at https://subsets.io/settings
-
-    Args:
-        api_key: Your Subsets API key (starts with sk_)
+    Returns a URL and code. Visit the URL and enter the code to authenticate.
+    After authorizing, call check_login_status with the device_code.
 
     Returns:
-        Dictionary with login status and user info
+        Dictionary with verification URL, user code, and device code
     """
-    global remote_platform, current_mode, config
-
-    if not api_key or not api_key.strip():
-        return {
-            "success": False,
-            "error": "API key is required. Get your key at https://subsets.io/settings"
-        }
-
-    api_key = api_key.strip()
-
-    # Validate the API key by making a test request
     try:
         import requests
-        response = requests.get(
-            f"{SUBSETS_API_URL}/api/users/profile",
-            headers={"Authorization": f"Bearer {api_key}"},
+        response = requests.post(
+            f"{SUBSETS_API_URL}/auth/device/code",
+            json={},
             timeout=10
         )
-
-        if response.status_code == 401:
-            return {
-                "success": False,
-                "error": "Invalid API key. Check your key at https://subsets.io/settings"
-            }
 
         if response.status_code != 200:
             return {
                 "success": False,
-                "error": f"Failed to validate API key: {response.status_code}"
+                "error": f"Failed to start login: {response.status_code}"
             }
 
-        user_data = response.json()
-
-        # Save the API key
-        save_api_key(api_key)
-
-        # Reinitialize remote platform
-        remote_platform = RemoteDataPlatform(SUBSETS_API_URL, api_key)
-
-        # Switch to remote mode
-        current_mode = "remote"
-        config["mode"] = "remote"
-        with open(config_path, 'w') as f:
-            json.dump(config, f, indent=2)
+        data = response.json()
 
         return {
-            "success": True,
-            "message": f"Logged in as {user_data.get('email', 'user')}",
-            "user": {
-                "email": user_data.get("email"),
-                "username": user_data.get("username")
-            },
-            "mode": "remote"
+            "action_required": True,
+            "message": f"To login, visit {data['verification_url']} and enter code: {data['user_code']}",
+            "verification_url": data['verification_url'],
+            "user_code": data['user_code'],
+            "device_code": data['device_code'],
+            "expires_in_minutes": data['expires_in'] // 60,
+            "next_step": "After authorizing, call check_login_status with the device_code above"
         }
 
-    except requests.exceptions.RequestException as e:
-        return {
-            "success": False,
-            "error": f"Failed to connect to Subsets API: {str(e)}"
-        }
     except Exception as e:
         return {
             "success": False,
@@ -291,10 +252,105 @@ def login(api_key: str) -> Dict[str, Any]:
 
 
 @mcp.tool()
-def logout() -> Dict[str, Any]:
-    """Log out and clear your API key.
+def check_login_status(device_code: str) -> Dict[str, Any]:
+    """Check if the device authorization has been completed.
 
-    This removes your saved API key and switches to local mode.
+    Call this after visiting the authorization URL and entering your code.
+
+    Args:
+        device_code: The device_code returned from the login tool
+
+    Returns:
+        Dictionary with authorization status and user info if authorized
+    """
+    global remote_platform, current_mode, config
+
+    if not device_code or not device_code.strip():
+        return {"error": "device_code is required"}
+
+    try:
+        import requests
+        response = requests.get(
+            f"{SUBSETS_API_URL}/auth/device/status/{device_code.strip()}",
+            timeout=10
+        )
+
+        if response.status_code == 404:
+            return {
+                "authorized": False,
+                "error": "Invalid or expired device code. Please start a new login."
+            }
+
+        if response.status_code != 200:
+            return {
+                "authorized": False,
+                "error": f"Failed to check status: {response.status_code}"
+            }
+
+        data = response.json()
+
+        if data.get('status') == 'pending':
+            return {
+                "authorized": False,
+                "status": "pending",
+                "message": "Waiting for authorization. Please visit the URL and enter your code."
+            }
+        elif data.get('status') == 'expired':
+            return {
+                "authorized": False,
+                "status": "expired",
+                "message": "Code has expired. Please start a new login."
+            }
+        elif data.get('status') == 'authorized' and data.get('user'):
+            # Get the user's API key to enable remote mode
+            user = data['user']
+
+            # Fetch API key from profile
+            profile_response = requests.get(
+                f"{SUBSETS_API_URL}/api/users/profile-by-email",
+                params={"email": user['email']},
+                timeout=10
+            )
+
+            if profile_response.status_code == 200:
+                profile = profile_response.json()
+                api_key = profile.get('api_key')
+
+                if api_key:
+                    # Save and activate
+                    save_api_key(api_key)
+                    remote_platform = RemoteDataPlatform(SUBSETS_API_URL, api_key)
+                    current_mode = "remote"
+                    config["mode"] = "remote"
+                    with open(config_path, 'w') as f:
+                        json.dump(config, f, indent=2)
+
+            return {
+                "authorized": True,
+                "status": "authorized",
+                "message": f"Successfully logged in as {user.get('email')}",
+                "user": user,
+                "mode": "remote"
+            }
+
+        return {
+            "authorized": False,
+            "status": data.get('status', 'unknown'),
+            "message": "Unknown status"
+        }
+
+    except Exception as e:
+        return {
+            "authorized": False,
+            "error": f"Failed to check status: {str(e)}"
+        }
+
+
+@mcp.tool()
+def logout() -> Dict[str, Any]:
+    """Log out and clear your authentication.
+
+    This removes your saved credentials and switches to local mode.
     You can still query locally synced datasets after logging out.
 
     Returns:
