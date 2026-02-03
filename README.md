@@ -1,12 +1,12 @@
 # Subsets MCP Server
 
-Model Context Protocol server for querying statistical datasets with AI assistants.
+Query statistical datasets with AI assistants or from the command line.
 
 ## Quick Start
 
-### Using Claude Desktop
+### Claude Desktop
 
-Add to your Claude Desktop config:
+Add to your config:
 
 **macOS:** `~/Library/Application Support/Claude/claude_desktop_config.json`
 **Windows:** `%APPDATA%\Claude\claude_desktop_config.json`
@@ -17,107 +17,206 @@ Add to your Claude Desktop config:
     "subsets": {
       "command": "uvx",
       "args": [
-        "--from",
-        "git+https://github.com/subsetsio/subsets-mcp-server.git",
-        "mcp-server",
-        "--api-key",
-        "YOUR_API_KEY"
+        "--from", "git+https://github.com/subsetsio/subsets-mcp-server.git",
+        "mcp-server", "--api-key", "YOUR_API_KEY"
       ]
     }
   }
 }
 ```
 
-Get your API key at [subsets.io/settings](https://subsets.io/settings)
+Get your API key at [subsets.io/settings](https://subsets.io/settings). Requires [uv](https://docs.astral.sh/uv/).
 
-Requires [uv](https://docs.astral.sh/uv/) installed.
-
-### Using Other MCP Clients
+### Claude Code
 
 ```bash
-uvx --from git+https://github.com/subsetsio/subsets-mcp-server.git mcp-server --api-key YOUR_API_KEY
+claude mcp add subsets -- uvx --from git+https://github.com/subsetsio/subsets-mcp-server.git mcp-server --api-key YOUR_API_KEY
 ```
 
-## Available MCP Tools
-
-### `list_datasets`
-Search and browse available datasets with semantic search.
-
-**Parameters:**
-- `q` (string): Search query
-- `limit` (integer): Max results (default: 10)
-- `min_score` (float): Min relevance score threshold (0.0-2.0)
-
-**Example:**
-```
-list_datasets(q="unemployment europe", limit=5)
-```
-
-### `get_dataset_details`
-Get detailed information about a specific dataset including schema, statistics, and preview.
-
-**Parameters:**
-- `dataset_id` (string): Dataset identifier
-
-**Returns:** Full metadata, column descriptions, row counts, data preview, and query usage stats
-
-**Example:**
-```
-get_dataset_details("eurostat_unemployment_2024")
-```
-
-### `execute_sql_query`
-Run SQL queries on datasets using DuckDB.
-
-**Parameters:**
-- `query` (string): SQL SELECT statement
-
-**Example:**
-```sql
-execute_sql_query("SELECT * FROM eurostat_unemployment_2024 LIMIT 10")
-```
-
-## CLI Tools
-
-The package also includes CLI commands for managing local datasets:
+### CLI Installation
 
 ```bash
-# Install globally
-npm install -g @subsetsio/mcp-server
+# Install the CLI
+pip install git+https://github.com/subsetsio/subsets-mcp-server.git
 
-# Add datasets to local collection
-subsets add eurostat_unemployment_2024
+# Log in with your API key
+subsets login
 
-# Download datasets
-subsets sync
+# Search for datasets
+subsets search "gdp growth"
 
-# List local datasets
+# Add a dataset to your local collection
+subsets add wdi_gdp_per_capita
+
+# Query with local DuckDB
+subsets query "SELECT * FROM wdi_gdp_per_capita LIMIT 10"
+```
+
+---
+
+## How It Works
+
+Subsets runs **locally** on your machine:
+
+1. **Search** the remote catalog to discover datasets
+2. **Add** datasets to download them to your local collection
+3. **Query** with DuckDB - 100% local compute, works offline
+
+Your data stays on your machine. Subsets indexes public data; it does not own it.
+
+---
+
+## MCP Tools
+
+| Tool | Description |
+|------|-------------|
+| `search_datasets` | Search the remote Subsets catalog |
+| `inspect_datasets` | Get detailed info, stats, and preview for datasets |
+| `list_datasets` | List your locally installed datasets |
+| `add_datasets` | Download datasets to your local collection |
+| `remove_datasets` | Remove datasets from your local collection |
+| `sync_datasets` | Update installed datasets to latest versions |
+| `execute_query` | Run SQL queries on local datasets |
+
+### search_datasets
+
+Search the Subsets catalog for datasets.
+
+```python
+search_datasets(query="gdp growth", limit=20)
+```
+
+- `query` (required): Search keywords
+- `limit` (optional): Max results (1-100, default 20)
+
+### inspect_datasets
+
+Get detailed information, statistics, and preview for datasets.
+
+```python
+inspect_datasets(dataset_ids=["wdi_gdp_per_capita", "wdi_population"])
+```
+
+- `dataset_ids` (required): List of dataset IDs (1-20)
+
+Returns metadata, schema, column statistics, preview rows, and sync status.
+
+### list_datasets
+
+List datasets in your local collection.
+
+```python
+list_datasets(query="gdp")  # Optional filter
+```
+
+- `query` (optional): Filter by keyword
+
+### add_datasets
+
+Download datasets to your local collection.
+
+```python
+add_datasets(dataset_ids=["wdi_gdp_per_capita", "wdi_population"])
+```
+
+- `dataset_ids` (required): List of dataset IDs to download
+
+### remove_datasets
+
+Remove datasets from your local collection.
+
+```python
+remove_datasets(dataset_ids=["wdi_gdp_per_capita"])
+```
+
+- `dataset_ids` (required): List of dataset IDs to remove
+
+### sync_datasets
+
+Update installed datasets to their latest versions.
+
+```python
+sync_datasets()  # Sync all
+sync_datasets(dataset_ids=["wdi_gdp_per_capita"])  # Sync specific
+```
+
+- `dataset_ids` (optional): List of dataset IDs to sync. If omitted, syncs all.
+
+### execute_query
+
+Execute a SQL query against your locally installed datasets.
+
+```python
+execute_query(query="SELECT * FROM wdi_gdp_per_capita LIMIT 10", output_format="tsv")
+```
+
+- `query` (required): SQL query to execute
+- `output_format` (optional): `json` or `tsv` (default)
+
+---
+
+## CLI Commands
+
+| Command | Description |
+|---------|-------------|
+| `subsets login` | Log in with your API key |
+| `subsets logout` | Log out |
+| `subsets search <query>` | Search the catalog |
+| `subsets inspect <ids...>` | Get dataset details |
+| `subsets list [query]` | List installed datasets |
+| `subsets add <ids...>` | Download datasets |
+| `subsets remove <ids...>` | Remove datasets |
+| `subsets sync [ids...]` | Update datasets |
+| `subsets query <sql>` | Execute SQL |
+| `subsets status` | Show current status |
+
+### Examples
+
+```bash
+# Search for datasets
+subsets search "unemployment rate"
+
+# Inspect multiple datasets
+subsets inspect wdi_gdp_per_capita wdi_population
+
+# Add multiple datasets at once
+subsets add wdi_gdp_per_capita wdi_population eurostat_unemployment
+
+# Add datasets from a file
+subsets add --file datasets.txt
+
+# List installed datasets
 subsets list
 
-# View status
+# Filter installed datasets
+subsets list gdp
+
+# Query with SQL
+subsets query "SELECT country, year, value FROM wdi_gdp_per_capita WHERE year = 2020"
+
+# Output as JSON
+subsets query "SELECT * FROM wdi_gdp_per_capita LIMIT 10" --format json
+
+# Sync all datasets
+subsets sync
+
+# Sync specific datasets
+subsets sync wdi_gdp_per_capita wdi_population
+
+# Remove datasets
+subsets remove wdi_gdp_per_capita
+
+# Check status
 subsets status
 ```
 
-## Local Development
+---
 
-```bash
-# Clone repository
-git clone https://github.com/subsetsio/subsets-mcp-server
-cd subsets-mcp-server
+## Configuration
 
-# Install dependencies
-uv sync
+Config is stored in `~/subsets/config.json`. Data is stored in `~/subsets/data/`.
 
-# Run MCP server
-uv run python src/server.py --api-key YOUR_API_KEY
-
-# Or run CLI
-uv run python src/cli.py --help
-```
-
-## Documentation
-
-Full documentation at [subsets.io/docs](https://subsets.io/docs)
+---
 
 ## License
 

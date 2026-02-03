@@ -82,7 +82,7 @@ def sync_dataset(
 
         if not api_key:
             stats["status"] = "failed"
-            stats["error"] = "No API key configured. Run 'subsets init' to configure."
+            stats["error"] = "No API key configured. Run 'subsets login' to configure."
             return stats
 
         # Load local sync info

@@ -1,24 +1,27 @@
 import os
 import sys
 import json
+import shutil
+import re
 import argparse
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 from pathlib import Path
+from datetime import datetime
 from fastmcp import FastMCP
-from pydantic import BaseModel, Field
 from subsets_platform.local import LocalDataPlatform
 from subsets_platform.remote import RemoteDataPlatform
-from auth import get_api_key, get_api_url, save_api_key, clear_api_key
+from auth import get_api_key, get_api_url, save_api_key
+from sync import sync_dataset, sync_all_datasets, get_batch_metadata
 
-# Create an MCP server
+# Create MCP server
 mcp = FastMCP("Subsets Data Warehouse")
 
 # Parse command-line arguments
-parser = argparse.ArgumentParser(description="Subsets MCP Server")
-parser.add_argument("--api-key", type=str, help="Subsets API key for remote mode")
+parser = argparse.ArgumentParser(description="Subsets MCP Server (Local)")
+parser.add_argument("--api-key", type=str, help="Subsets API key for remote catalog access")
 args, unknown = parser.parse_known_args()
 
-# If --api-key is provided via CLI, save it
+# Save API key if provided via CLI
 if args.api_key:
     save_api_key(args.api_key)
 
@@ -26,446 +29,410 @@ if args.api_key:
 SUBSETS_API_URL = get_api_url()
 SUBSETS_API_KEY = get_api_key()
 
-# Load or create mode configuration
-config_path = Path.home() / "subsets" / "config.json"
-config_path.parent.mkdir(exist_ok=True)
-
-if config_path.exists():
-    with open(config_path, 'r') as f:
-        config = json.load(f)
-else:
-    config = {"mode": "remote" if SUBSETS_API_KEY else "local"}
-    with open(config_path, 'w') as f:
-        json.dump(config, f, indent=2)
-
-# Current mode
-current_mode = config.get("mode", "remote")
-
 # Initialize platforms
 local_platform = LocalDataPlatform()
 remote_platform = RemoteDataPlatform(SUBSETS_API_URL, SUBSETS_API_KEY) if SUBSETS_API_KEY else None
 
 
-# Models for tool inputs
-class ListDatasetsInput(BaseModel):
-    """Input parameters for listing datasets"""
-    limit: int = Field(default=10, ge=1, le=100, description="Maximum number of datasets to return")
-    offset: int = Field(default=0, ge=0, description="Number of datasets to skip for pagination")
-    license: Optional[str] = Field(None, description="Filter by license type")
-    git_user: Optional[str] = Field(None, description="Filter by GitHub username (dataset publisher)")
-    q: Optional[str] = Field(None, description="Search query for keyword search")
-    min_score: Optional[float] = Field(None, ge=0.0, le=2.0, description="Minimum relevance score threshold")
-    detailed: bool = Field(default=False, description="Include detailed summary data")
-
-
-class ExecuteSQLQueryInput(BaseModel):
-    """Input parameters for executing SQL query"""
-    query: str = Field(..., min_length=1, description="SQL query to execute")
-
-
-@mcp.tool()
-def list_datasets(
-    limit: int = 10,
-    offset: int = 0,
-    license: Optional[str] = None,
-    git_user: Optional[str] = None,
-    q: Optional[str] = None,
-    min_score: Optional[float] = None,
-    detailed: bool = False
-) -> Dict[str, Any]:
-    """List available datasets from the Subsets data warehouse
-
-    Args:
-        limit: Maximum number of datasets to return (1-100)
-        offset: Number of datasets to skip for pagination
-        license: Filter by license type
-        git_user: Filter by GitHub username (dataset publisher)
-        q: Search query for keyword search
-        min_score: Minimum relevance score threshold (0.0-2.0)
-        detailed: Include detailed summary data (column stats, query metrics, etc.)
-
-    Returns:
-        Dictionary containing datasets list and total count
-    """
-    # Check mode and use appropriate platform
-    if current_mode == "local":
-        return local_platform.list_datasets(
-            limit=limit,
-            offset=offset,
-            license=license,
-            git_user=git_user,
-            q=q,
-            min_score=min_score,
-            detailed=detailed
-        )
+def format_bytes(size_bytes: int) -> str:
+    """Format bytes as human-readable string."""
+    if size_bytes >= 1024**3:
+        return f"{size_bytes / (1024**3):.2f} GB"
+    elif size_bytes >= 1024**2:
+        return f"{size_bytes / (1024**2):.0f} MB"
+    elif size_bytes >= 1024:
+        return f"{size_bytes / 1024:.0f} KB"
     else:
-        if not remote_platform:
-            return {
-                "error": "Remote mode requires API key. Run 'subsets init' to configure."
-            }
-        return remote_platform.list_datasets(
-            limit=limit,
-            offset=offset,
-            license=license,
-            git_user=git_user,
-            q=q,
-            min_score=min_score,
-            detailed=detailed
-        )
+        return f"{size_bytes} B"
 
 
-@mcp.tool()
-def execute_sql_query(query: str, output_format: str = "tsv") -> Dict[str, Any]:
-    """Execute a SQL query against datasets in the Subsets data warehouse
-    
-    Args:
-        query: SQL query to execute
-        output_format: Output format - 'json' or 'tsv' (more efficient for large results)
-    
-    Returns:
-        Query results in the requested format
-    """
-    # Validate output format
-    if output_format not in ["json", "tsv"]:
-        return {
-            "error": "Invalid output_format. Must be 'json' or 'tsv'"
-        }
-    
-    # Check mode and use appropriate platform
-    if current_mode == "local":
-        return local_platform.execute_sql_query(query, output_format=output_format)
-    else:
-        if not remote_platform:
-            return {
-                "error": "Remote mode requires API key. Run 'subsets init' to configure."
-            }
-        return remote_platform.execute_sql_query(query, output_format=output_format)
+def calculate_disk_usage(path: Path) -> int:
+    """Calculate total disk usage of a directory in bytes."""
+    total = 0
+    if path.exists():
+        for item in path.rglob('*'):
+            if item.is_file():
+                total += item.stat().st_size
+    return total
 
 
-@mcp.tool()
-def get_current_mode() -> Dict[str, Any]:
-    """Get the current mode (local or remote)"""
-    local_datasets = len(local_platform.config.get("datasets", []))
-    return {
-        "mode": current_mode,
-        "local_datasets": local_datasets,
-        "api_configured": remote_platform is not None
-    }
+def extract_table_names(sql: str) -> List[str]:
+    """Extract table names from SQL query."""
+    # Simple regex to find FROM and JOIN table references
+    pattern = r'(?:FROM|JOIN)\s+([a-zA-Z_][a-zA-Z0-9_]*)'
+    matches = re.findall(pattern, sql, re.IGNORECASE)
+    return list(set(matches))
 
 
-@mcp.tool()
-def switch_mode(mode: str) -> Dict[str, Any]:
-    """Switch between local and remote mode
-    
-    Args:
-        mode: Target mode ('local' or 'remote')
-    
-    Returns:
-        Dictionary with status and new mode information
-    """
-    global current_mode
-    
-    if mode not in ["local", "remote"]:
-        return {
-            "error": "Invalid mode. Must be 'local' or 'remote'",
-            "current_mode": current_mode
-        }
-    
-    # Check if switching to remote mode is possible
-    if mode == "remote" and not remote_platform:
-        return {
-            "error": "Cannot switch to remote mode: API key not configured",
-            "current_mode": current_mode,
-            "suggestion": "Run 'subsets init' to configure your API key, then restart the server"
-        }
-    
-    # Get previous mode
-    previous_mode = current_mode
-    
-    # Switch mode
-    try:
-        current_mode = mode
-        
-        # Save to config
-        config["mode"] = mode
-        with open(config_path, 'w') as f:
-            json.dump(config, f, indent=2)
-        
-        local_datasets = len(local_platform.config.get("datasets", []))
-        
-        return {
-            "success": True,
-            "previous_mode": previous_mode,
-            "current_mode": mode,
-            "message": f"Successfully switched from {previous_mode} to {mode} mode",
-            "local_datasets": local_datasets if mode == "local" else None,
-            "api_configured": remote_platform is not None
-        }
-    except Exception as e:
-        return {
-            "error": f"Failed to switch mode: {str(e)}",
-            "current_mode": current_mode
-        }
-
-
-@mcp.tool()
-def login() -> Dict[str, Any]:
-    """Start the device authorization login flow.
-
-    Returns a URL and code. Visit the URL and enter the code to authenticate.
-    After authorizing, call check_login_status with the device_code.
-
-    Returns:
-        Dictionary with verification URL, user code, and device code
-    """
-    try:
-        import requests
-        response = requests.post(
-            f"{SUBSETS_API_URL}/auth/device/code",
-            json={},
-            timeout=10
-        )
-
-        if response.status_code != 200:
-            return {
-                "success": False,
-                "error": f"Failed to start login: {response.status_code}"
-            }
-
-        data = response.json()
-
-        return {
-            "action_required": True,
-            "message": f"To login, visit {data['verification_url']} and enter code: {data['user_code']}",
-            "verification_url": data['verification_url'],
-            "user_code": data['user_code'],
-            "device_code": data['device_code'],
-            "expires_in_minutes": data['expires_in'] // 60,
-            "next_step": "After authorizing, call check_login_status with the device_code above"
-        }
-
-    except Exception as e:
-        return {
-            "success": False,
-            "error": f"Login failed: {str(e)}"
-        }
-
-
-@mcp.tool()
-def check_login_status(device_code: str) -> Dict[str, Any]:
-    """Check if the device authorization has been completed.
-
-    Call this after visiting the authorization URL and entering your code.
-
-    Args:
-        device_code: The device_code returned from the login tool
-
-    Returns:
-        Dictionary with authorization status and user info if authorized
-    """
-    global remote_platform, current_mode, config
-
-    if not device_code or not device_code.strip():
-        return {"error": "device_code is required"}
-
-    try:
-        import requests
-        response = requests.get(
-            f"{SUBSETS_API_URL}/auth/device/status/{device_code.strip()}",
-            timeout=10
-        )
-
-        if response.status_code == 404:
-            return {
-                "authorized": False,
-                "error": "Invalid or expired device code. Please start a new login."
-            }
-
-        if response.status_code != 200:
-            return {
-                "authorized": False,
-                "error": f"Failed to check status: {response.status_code}"
-            }
-
-        data = response.json()
-
-        if data.get('status') == 'pending':
-            return {
-                "authorized": False,
-                "status": "pending",
-                "message": "Waiting for authorization. Please visit the URL and enter your code."
-            }
-        elif data.get('status') == 'expired':
-            return {
-                "authorized": False,
-                "status": "expired",
-                "message": "Code has expired. Please start a new login."
-            }
-        elif data.get('status') == 'authorized' and data.get('user'):
-            # Get the user's API key to enable remote mode
-            user = data['user']
-
-            # Fetch API key from profile
-            profile_response = requests.get(
-                f"{SUBSETS_API_URL}/api/users/profile-by-email",
-                params={"email": user['email']},
-                timeout=10
-            )
-
-            if profile_response.status_code == 200:
-                profile = profile_response.json()
-                api_key = profile.get('api_key')
-
-                if api_key:
-                    # Save and activate
-                    save_api_key(api_key)
-                    remote_platform = RemoteDataPlatform(SUBSETS_API_URL, api_key)
-                    current_mode = "remote"
-                    config["mode"] = "remote"
-                    with open(config_path, 'w') as f:
-                        json.dump(config, f, indent=2)
-
-            return {
-                "authorized": True,
-                "status": "authorized",
-                "message": f"Successfully logged in as {user.get('email')}",
-                "user": user,
-                "mode": "remote"
-            }
-
-        return {
-            "authorized": False,
-            "status": data.get('status', 'unknown'),
-            "message": "Unknown status"
-        }
-
-    except Exception as e:
-        return {
-            "authorized": False,
-            "error": f"Failed to check status: {str(e)}"
-        }
-
-
-@mcp.tool()
-def logout() -> Dict[str, Any]:
-    """Log out and clear your authentication.
-
-    This removes your saved credentials and switches to local mode.
-    You can still query locally synced datasets after logging out.
-
-    Returns:
-        Dictionary with logout status
-    """
-    global remote_platform, current_mode, config
-
-    # Check if already logged out
-    if not get_api_key():
-        return {
-            "success": True,
-            "message": "Already logged out",
-            "mode": current_mode
-        }
-
-    try:
-        # Clear the API key
-        clear_api_key()
-
-        # Clear remote platform
-        remote_platform = None
-
-        # Switch to local mode
-        current_mode = "local"
-        config["mode"] = "local"
-        with open(config_path, 'w') as f:
-            json.dump(config, f, indent=2)
-
-        local_datasets = len(local_platform.config.get("datasets", []))
-
-        return {
-            "success": True,
-            "message": "Logged out successfully. Switched to local mode.",
-            "mode": "local",
-            "local_datasets": local_datasets
-        }
-
-    except Exception as e:
-        return {
-            "success": False,
-            "error": f"Logout failed: {str(e)}"
-        }
-
-
-@mcp.tool()
-def get_dataset_details(dataset_id: str) -> Dict[str, Any]:
-    """Get detailed information about a specific dataset including schema, summary statistics, and preview
-
-    Args:
-        dataset_id: Dataset identifier (required)
-
-    Returns:
-        Dictionary with dataset details including:
-        - Metadata (title, description, license, source info)
-        - Schema with all columns and types
-        - Statistics (row count, size, query usage)
-        - Preview of first 20 rows
-        - Related tables often queried together
-    """
-    if current_mode == "local":
-        return {
-            "error": "get_dataset_details is only available in remote mode. Switch to remote mode with switch_mode('remote')."
-        }
-
-    if not remote_platform:
-        return {
-            "error": "Remote mode requires API key. Run 'subsets init' to configure."
-        }
-
-    return remote_platform.get_dataset_details(dataset_id)
-
+# =============================================================================
+# SHARED TOOLS (Available in both hosted and local mode)
+# =============================================================================
 
 @mcp.tool()
 def search_datasets(query: str, limit: int = 20) -> Dict[str, Any]:
-    """Fast keyword search to find relevant datasets.
+    """Search the Subsets catalog for datasets.
 
-    Use this for quick dataset discovery. Returns enough context for AI reranking:
-    - dataset_id: Unique identifier
-    - title: Human-readable name
-    - description: Truncated to ~150 chars
-    - row_count: Number of rows
-    - columns: All column names
-    - score: Keyword match relevance (0.0-1.0)
-
-    Works in both local and remote modes using the same pre-built search index.
+    Always searches the full remote catalog, regardless of what's installed locally.
+    Use this to discover datasets, then use add_dataset() to download them.
 
     Args:
-        query: Search keywords (e.g. "gdp growth", "unemployment rate")
+        query: Search keywords (e.g. "gdp growth", "carbon emissions")
         limit: Maximum results to return (1-100)
 
     Returns:
-        Dictionary with query, results array, and total count
+        Dictionary with query, results array, and total count.
+        Each result includes: dataset_id, title, description, row_count, columns, score
     """
-    if current_mode == "local":
-        return local_platform.search_datasets(query, limit)
-
     if not remote_platform:
-        return {
-            "error": "Remote mode requires API key. Run 'subsets init' to configure."
-        }
+        return {"error": "API key required. Configure SUBSETS_API_KEY."}
 
     return remote_platform.search_datasets(query, limit)
 
 
 @mcp.tool()
-def get_local_collection() -> Dict[str, Any]:
-    """Get information about your local dataset collection"""
-    datasets = local_platform.list_local_datasets()
-    synced_count = sum(1 for d in datasets if d.get('synced', False))
-    
+def inspect_datasets(dataset_ids: List[str]) -> Dict[str, Any]:
+    """Inspect datasets to get detailed information, statistics, and preview.
+
+    Returns metadata, schema, preview rows, column statistics, and usage info.
+    Use this to evaluate datasets before downloading or querying.
+
+    Args:
+        dataset_ids: List of dataset identifiers (1-20 datasets)
+
+    Returns:
+        Dictionary with results for each dataset:
+        - Metadata (title, description, license, source info)
+        - Schema with all columns and types
+        - Statistics (row count, size, column cardinality, min/max/mean for numerics)
+        - Preview of first rows
+        - Usage info (downloads, frequently_used_with) for catalog datasets
+        - Sync status (installed, local_version, last_synced) for local datasets
+    """
+    if not dataset_ids:
+        return {"error": "At least one dataset_id required"}
+
+    if len(dataset_ids) > 20:
+        return {"error": "Maximum 20 datasets per request"}
+
+    if not remote_platform:
+        return {"error": "API key required. Configure SUBSETS_API_KEY."}
+
+    # Get local dataset info for sync status
+    local_datasets = {d['id']: d for d in local_platform.list_local_datasets()}
+
+    results = {}
+    for dataset_id in dataset_ids:
+        details = remote_platform.get_dataset_details(dataset_id)
+
+        # Add local sync status if installed
+        if dataset_id in local_datasets:
+            local_info = local_datasets[dataset_id]
+            details["installed"] = True
+            details["local_version"] = local_info.get("local_version")
+            details["last_synced"] = local_info.get("last_synced")
+            details["synced"] = local_info.get("synced", False)
+        else:
+            details["installed"] = False
+
+        results[dataset_id] = details
+
     return {
-        "total_datasets": len(datasets),
-        "synced_datasets": synced_count,
-        "pending_sync": len(datasets) - synced_count,
-        "datasets": datasets
+        "count": len(results),
+        "datasets": results
+    }
+
+
+# =============================================================================
+# QUERY TOOL (Local DuckDB)
+# =============================================================================
+
+@mcp.tool()
+def execute_query(query: str, output_format: str = "tsv") -> Dict[str, Any]:
+    """Execute a SQL query against your locally installed datasets.
+
+    Runs on local DuckDB for speed and privacy. Only installed datasets are available.
+    Use list_datasets() to see what's available, or add_datasets() to install more.
+
+    Args:
+        query: SQL query to execute
+        output_format: 'json' or 'tsv' (more efficient for large results)
+
+    Returns:
+        Query results in the requested format
+    """
+    if output_format not in ["json", "tsv"]:
+        return {"error": "Invalid output_format. Must be 'json' or 'tsv'"}
+
+    # Check if referenced tables are installed
+    table_names = extract_table_names(query)
+    installed = {d['id'] for d in local_platform.list_local_datasets() if d.get('synced')}
+
+    missing = []
+    for table in table_names:
+        # Normalize table name (replace _ with - for matching)
+        normalized = table.replace('_', '-')
+        if table not in installed and normalized not in installed:
+            # Check with underscores too
+            underscore_version = table.replace('-', '_')
+            if underscore_version not in installed:
+                missing.append(table)
+
+    if missing:
+        return {
+            "error": f"Dataset(s) not installed locally: {', '.join(missing)}",
+            "suggestion": f"Use add_dataset('{missing[0]}') to download it first.",
+            "missing_datasets": missing
+        }
+
+    return local_platform.execute_sql_query(query, output_format=output_format)
+
+
+# =============================================================================
+# LOCAL COLLECTION TOOLS
+# =============================================================================
+
+@mcp.tool()
+def list_datasets(query: Optional[str] = None) -> Dict[str, Any]:
+    """List datasets in your local collection.
+
+    Shows what's available for querying with execute_query().
+    Optionally filter by keyword to find specific datasets.
+
+    Args:
+        query: Optional keyword to filter datasets by name/id
+
+    Returns:
+        Dictionary with:
+        - total: Number of matching datasets
+        - datasets: List with id, synced status, size, row_count
+    """
+    datasets = local_platform.list_local_datasets()
+    synced = [d for d in datasets if d.get('synced', False)]
+
+    # Filter by query if provided
+    if query:
+        query_lower = query.lower()
+        synced = [d for d in synced if query_lower in d['id'].lower()]
+
+    return {
+        "total": len(synced),
+        "datasets": [{
+            "id": d["id"],
+            "row_count": d.get("row_count"),
+            "size_bytes": d.get("size_bytes"),
+            "size_formatted": format_bytes(d.get("size_bytes", 0) or 0),
+            "local_version": d.get("local_version"),
+            "last_synced": d.get("last_synced")
+        } for d in synced]
+    }
+
+
+@mcp.tool()
+def add_datasets(dataset_ids: List[str]) -> Dict[str, Any]:
+    """Download datasets to your local collection.
+
+    After downloading, you can query them with execute_query().
+    This is a blocking operation that waits for downloads to complete.
+
+    Args:
+        dataset_ids: List of dataset identifiers (e.g., ['wdi_gdp_growth', 'wdi_population'])
+
+    Returns:
+        Dictionary with download status for each dataset
+    """
+    if not dataset_ids:
+        return {"error": "At least one dataset_id required"}
+
+    if not remote_platform:
+        return {
+            "success": False,
+            "error": "API key required to download datasets. Configure SUBSETS_API_KEY."
+        }
+
+    # Fetch metadata for all datasets
+    metadata = get_batch_metadata(dataset_ids)
+    if not metadata:
+        return {
+            "success": False,
+            "error": "Could not fetch dataset metadata"
+        }
+
+    # Check which datasets exist
+    not_found = [did for did in dataset_ids if did not in metadata]
+    if not_found:
+        return {
+            "success": False,
+            "error": f"Datasets not found: {', '.join(not_found)}"
+        }
+
+    # Add datasets to collection
+    existing = local_platform.config.get("datasets", [])
+    existing_ids = {d['id'] for d in existing}
+
+    datasets_to_add = []
+    for dataset_id in dataset_ids:
+        if dataset_id not in existing_ids:
+            dataset_info = metadata[dataset_id]
+            datasets_to_add.append({
+                'id': dataset_id,
+                'name': dataset_id,
+                'added_at': datetime.now().isoformat(),
+                'size_bytes': dataset_info.get('size_bytes'),
+                'row_count': dataset_info.get('row_count'),
+                'delta_version': dataset_info.get('delta_version'),
+                'last_modified': dataset_info.get('last_modified')
+            })
+
+    if datasets_to_add:
+        local_platform.add_datasets(datasets_to_add)
+
+    # Sync all datasets
+    data_path = local_platform.data_path
+    results = {"added": [], "failed": [], "already_installed": []}
+    total_bytes = 0
+
+    for dataset_id in dataset_ids:
+        sync_result = sync_dataset(dataset_id, data_path, quiet=True)
+
+        if sync_result["status"] == "failed":
+            results["failed"].append({
+                "dataset_id": dataset_id,
+                "error": sync_result.get("error", "Download failed")
+            })
+        elif sync_result["status"] == "up_to_date":
+            results["already_installed"].append(dataset_id)
+        else:
+            bytes_downloaded = sync_result.get("bytes_downloaded", 0)
+            total_bytes += bytes_downloaded
+            results["added"].append({
+                "dataset_id": dataset_id,
+                "bytes_downloaded": bytes_downloaded
+            })
+
+    return {
+        "success": len(results["failed"]) == 0,
+        "added": len(results["added"]),
+        "already_installed": len(results["already_installed"]),
+        "failed": len(results["failed"]),
+        "total_bytes_downloaded": total_bytes,
+        "total_formatted": format_bytes(total_bytes),
+        "details": results,
+        "message": f"Added {len(results['added'])} dataset(s). Ready to query."
+    }
+
+
+@mcp.tool()
+def remove_datasets(dataset_ids: List[str]) -> Dict[str, Any]:
+    """Remove datasets from your local collection and delete their data.
+
+    Args:
+        dataset_ids: List of dataset identifiers to remove
+
+    Returns:
+        Dictionary with removal status and bytes freed
+    """
+    if not dataset_ids:
+        return {"error": "At least one dataset_id required"}
+
+    existing = local_platform.config.get("datasets", [])
+    existing_ids = {d['id'] for d in existing}
+
+    not_installed = [did for did in dataset_ids if did not in existing_ids]
+    if not_installed:
+        return {
+            "success": False,
+            "error": f"Datasets not installed: {', '.join(not_installed)}"
+        }
+
+    total_bytes_freed = 0
+    removed = []
+
+    for dataset_id in dataset_ids:
+        # Calculate size before deletion
+        dataset_path = local_platform.data_path / dataset_id
+        bytes_freed = calculate_disk_usage(dataset_path)
+        total_bytes_freed += bytes_freed
+
+        # Delete local data
+        if dataset_path.exists():
+            shutil.rmtree(dataset_path)
+
+        removed.append({"dataset_id": dataset_id, "bytes_freed": bytes_freed})
+
+    # Remove from collection
+    local_platform.remove_datasets(dataset_ids)
+
+    return {
+        "success": True,
+        "removed": len(removed),
+        "total_bytes_freed": total_bytes_freed,
+        "total_formatted": format_bytes(total_bytes_freed),
+        "details": removed,
+        "message": f"Removed {len(removed)} dataset(s), freed {format_bytes(total_bytes_freed)}"
+    }
+
+
+@mcp.tool()
+def sync_datasets(dataset_ids: Optional[List[str]] = None) -> Dict[str, Any]:
+    """Update installed datasets to their latest versions.
+
+    Downloads only the changes (Delta Lake diffs) for efficiency.
+    If no IDs specified, syncs all installed datasets.
+
+    Args:
+        dataset_ids: Optional list of dataset IDs to sync. If None, syncs all.
+
+    Returns:
+        Dictionary with sync results
+    """
+    if not remote_platform:
+        return {
+            "success": False,
+            "error": "API key required to sync. Configure SUBSETS_API_KEY."
+        }
+
+    all_datasets = local_platform.list_local_datasets()
+
+    if not all_datasets:
+        return {
+            "success": True,
+            "message": "No datasets installed. Use add_datasets() first.",
+            "synced": 0,
+            "failed": 0,
+            "up_to_date": 0
+        }
+
+    if dataset_ids:
+        datasets_to_sync = [d for d in all_datasets if d['id'] in dataset_ids]
+        not_found = set(dataset_ids) - {d['id'] for d in datasets_to_sync}
+        if not_found:
+            return {
+                "success": False,
+                "error": f"Datasets not installed: {', '.join(not_found)}"
+            }
+    else:
+        datasets_to_sync = all_datasets
+
+    data_path = local_platform.data_path
+    results = sync_all_datasets(datasets_to_sync, data_path, max_workers=4)
+
+    total_bytes = sum(r.get("bytes_downloaded", 0) for r in results["synced"])
+
+    return {
+        "success": True,
+        "synced": len(results["synced"]),
+        "up_to_date": len(results["up_to_date"]),
+        "failed": len(results["failed"]),
+        "total_bytes_downloaded": total_bytes,
+        "total_formatted": format_bytes(total_bytes),
+        "details": {
+            "synced": [r["dataset_id"] for r in results["synced"]],
+            "up_to_date": [r["dataset_id"] for r in results["up_to_date"]],
+            "failed": [{
+                "dataset_id": r["dataset_id"],
+                "error": r.get("error")
+            } for r in results["failed"]]
+        }
     }
 
 
@@ -474,6 +441,5 @@ def main():
     mcp.run()
 
 
-# Run the server
 if __name__ == "__main__":
     main()
